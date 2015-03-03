@@ -1,4 +1,4 @@
-Anonymous-mouse-server
+Anonymous-moose-server
 ===============
 
 Part of a client and server system for anonymous chat services. 
@@ -14,4 +14,4 @@ The 'inter_com' service can be any xmpp account, it acts as the back bone of the
 If you want to get involved and understand the system better then please have a look at technical.pdf
 
 Binarys avalible at
-https://sourceforge.net/projects/anonymousmouse/
+https://sourceforge.net/projects/anonymousmoose/
