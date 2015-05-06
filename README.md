@@ -1,4 +1,4 @@
-Anonymous-mouse-server
+Anonymous-moose-server
 ===============
 
 Part of a client and server system for anonymous chat services. 
@@ -12,3 +12,5 @@ The Facebook and zoho services should be filled in with the xmpp login details.
 The 'inter_com' service can be any xmpp account, it acts as the back bone of the system and connects the clients to the server.
 
 If you want to get involved and understand the system better then please have a look at technical.pdf
+
+Binarys avalible on the releases page
