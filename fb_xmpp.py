@@ -79,7 +79,7 @@ if __name__ == '__main__':  # TODO Better tests needed?
     # import tkinter
     q = multiprocessing.Queue()
     # Put your facebook id here '[name.name.number]@chat.facebook.com'
-    jid = "thomas.wilson.94214508@chat.facebook.com"
+    jid = "nope"
     password = input('Password: ')
     xmpp_fb = FBXMPP(jid, password, q)
     # Connect to the XMPP server and start processing XMPP stanzas.
@@ -87,7 +87,7 @@ if __name__ == '__main__':  # TODO Better tests needed?
         xmpp_fb.process()
         print("Connected to FB")
         # Send 'test' to ozzy wilson
-        xmpp_fb.send_message(mto="100008074519153@chat.facebook.com", mbody='test', mtype='chat')
+        xmpp_fb.send_message(mto="nope", mbody='test', mtype='chat')
     else:
         print("Unable to connect to FB")
     while True:
