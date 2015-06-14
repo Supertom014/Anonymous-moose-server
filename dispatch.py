@@ -9,7 +9,8 @@
 import json
 from admin_debug_interface import AdminDebugInterface
 from threading import Thread, Lock
-from timeout_thread import TimeoutThreadDisable, MultiTimeoutThread
+from timeout_thread import TimeoutThreadDisableQueue, MultiTimeoutThreadQueue
+import multiprocessing
 from Crypto.Cipher import PKCS1_OAEP
 from Crypto.PublicKey import RSA
 import time
@@ -42,21 +43,33 @@ class Dispatch(Thread):
         self.ring_queue = {'lock': Lock(), 'list': []}
         self.ring_counter = 0
 
+        # Timed-out clients go in the grace_clients for n seconds.
+        # All messages to these clients get redirected to a cache.
+        # {'UUID': {'msg_cache':[], 'timeout_handle':-}, ...}
+        self.grace_clients = {}
+
+        self.time_event_queue = multiprocessing.Queue()
+
         # Contains only active clients
         self.active_clients = {'lock': Lock(), 'list': []}  # {'lock':lock, 'list': [uuid1, uuid2, ...]}
 
         # All clients, including implied disconnected clients. Excludes explicitly disconnected clients.
         self.clients = {'lock': Lock(), 'dict': {}}
-        # {'lock':lock, 'list': {uuid: {'timeout': handle, 'lock': semaphore_lock}, ...}}
+        # {'lock':lock, 'dict': {uuid: {'timeout': handle, 'lock': semaphore_lock}, ...}}
 
         self.client_ciphers = {}  # [uuid: cipher_object, ...]
         self.alices_cypher = PKCS1_OAEP.new(RSA.importKey(options['alice_private_key']))
+
         # Stats
         self.messages_rejected = 0
         self.admin_debug_interface = AdminDebugInterface(self.service_status, self.clients, self.active_clients,
                                                          self.address_client_list, self.ring_queue)
         self.potential_admin = {'service': '', 'address': ''}
         self.admin = {'service': '', 'address': ''}
+
+    def time_event_handler(self, time_event):
+        getattr(self, time_event['name'])(time_event['arg'])
+        return
 
     def update_status(self, msg):
         service, status = msg
@@ -77,18 +90,23 @@ class Dispatch(Thread):
         try:
             if self.clients['dict'][uuid]['timeout'].isAlive():
                 logger.debug('Client alive update for: %s', uuid)
-                self.clients['dict'][uuid]['lock'].acquire_lock()
-                self.clients['dict'][uuid]['timeout'].set_times(10, 20)
-                self.clients['dict'][uuid]['lock'].release_lock()
+                self.clients['dict'][uuid]['timeout'].set_times_reset(10, 20)
             else:
                 raise KeyError
         except KeyError:
+            if uuid in self.grace_clients:
+                self.grace_clients[uuid]['timeout_handle'].disable()
+                msg = json.dumps({'type': 'msg', 'msg': self.grace_clients[uuid]['msg_cache'],
+                                  'I/O': 'in', 'UUID': uuid})
+                self.encrypt_and_send(msg, uuid)
+                self.grace_clients.pop(uuid)
             logger.debug('Client alive thread creation for: %s', uuid)
-            lock = Lock()
-            timeout = MultiTimeoutThread(lock, (10, 20), (self.probe_client, self.client_timed_out), uuid)
+            #  timeout = MultiTimeoutThread(lock, (10, 20), (self.probe_client, self.client_timed_out), uuid)
+            callbacks = ("probe_client", "client_timed_out")
+            timeout = MultiTimeoutThreadQueue(self.time_event_queue, (10,20), callbacks, uuid)
             timeout.daemon = True
             timeout.start()
-            self.clients['dict'][uuid] = {'timeout': timeout, 'lock': lock}
+            self.clients['dict'][uuid] = {'timeout': timeout}
         self.clients['lock'].release_lock()
 
     def probe_client(self, uuid):
@@ -102,27 +120,20 @@ class Dispatch(Thread):
     def client_timed_out(self, uuid):
         logger.info('Client timed out: %s', uuid)
         self.clients['lock'].acquire_lock()
-        self.clients['dict'][uuid]['lock'].acquire_lock()
         self.clients['dict'][uuid]['timeout'].disable()
-        self.clients['dict'][uuid]['lock'].release_lock()
-        # Start a timing thread that will remove the client from the clients list
-        #lock = Lock()
-        #timeout = TimeoutThreadDisable(lock, 60, self.remove_client_timer_callback, uuid)
-        #timeout.daemon = True
-        #timeout.start()
-        #self.clients['dict'][uuid]['disconnect'] = timeout
         self.clients['lock'].release_lock()
         # TODO pop this off the list after the probe thread had sent 'probe' command.
         for association in self.address_client_list:
             if association['UUID'] == uuid:
-                self.outgoing_dispatch((association['service'], association['address'],
-                                        self.options['messages']['client_dropped'], 'active'))
-        self.client_disconnect(uuid)
-
-    #def remove_client_timer_callback(self):
-    #    self.clients['lock'].acquire_lock()
-    #    self.clients['dict'].pop(uuid)
-    #    self.clients['lock'].release_lock()
+                #  self.outgoing_dispatch((association['service'], association['address'],
+                #                        self.options['messages']['client_dropped'], 'active'))
+                logger.info('Client timed-out during conversation: %s', uuid)
+        #  Start disconnect timer.
+        timeout = TimeoutThreadDisableQueue(self.time_event_queue, 60, "client_disconnect", uuid)
+        timeout.daemon = True
+        timeout.start()
+        #  Add client to grace_clients dict
+        self.grace_clients.update({uuid:{'msg_cache': [], 'timeout_handle': timeout}})
 
     def send_status_to_clients(self):
         msg = json.dumps({'type': 'status', 'services': self.service_status})
@@ -141,13 +152,14 @@ class Dispatch(Thread):
                 self.ring_queue['list'][x]['text'].append(msg[2])
                 return
         logger.info('Sending ring ID%d to clients', self.ring_counter)
-        lock = Lock()
+        #lock = Lock()
         ring_counter = self.ring_counter
-        timeout = TimeoutThreadDisable(lock, 60, self.ring_timed_out, ring_counter)
+        #timeout = TimeoutThreadDisable(lock, 60, self.ring_timed_out, ring_counter)
+        timeout = TimeoutThreadDisableQueue(self.time_event_queue, 60, "ring_timed_out", ring_counter)
         timeout.daemon = True
         timeout.start()
         self.ring_queue['list'].append({'ID': ring_counter, 'address': msg[1], 'text': [msg[2]],
-                                        'service': service, 'timeout_handle': timeout, 'timeout_handle_lock': lock})
+                                        'service': service, 'timeout_handle': timeout})
         #self.ring_queue['lock'].release_lock()
         msg = json.dumps({'type': 'ring', 'group': '', 'ID': self.ring_counter, 'time': (time.time()+55)})
         self.send_to_all_clients(msg)
@@ -225,6 +237,10 @@ class Dispatch(Thread):
 
     def client_disconnect(self, uuid):
         logger.info('Client disconnecting: %s', uuid)
+        for association in self.address_client_list:
+            if association['UUID'] == uuid:
+                self.outgoing_dispatch((association['service'], association['address'],
+                                        self.options['messages']['client_dropped'], 'active'))
         self.client_disassociate_with_address(uuid)  # remove from active client list
         try:
             pass
@@ -246,9 +262,7 @@ class Dispatch(Thread):
             #self.ring_queue['lock'].acquire_lock()
             if self.ring_queue['list'][x]['ID'] == msg['ID']:
                 ring_item = self.ring_queue['list'].pop(x)
-                ring_item['timeout_handle_lock'].acquire_lock()
                 ring_item['timeout_handle'].disable()
-                ring_item['timeout_handle_lock'].release_lock()
                 self.address_client_list.append({'UUID': msg['UUID'], 'address': ring_item['address'],
                                                  'service': ring_item['service']})
                 out_msg = json.dumps({'type': 'ringACKACK', 'ID': msg['ID'], 'UUID': msg['UUID']})
@@ -407,6 +421,8 @@ class Dispatch(Thread):
                     logger.debug('Found match for '+hex(hash(msg[1]))+' from '+service+' to UUID:'+uuid)
                     found = True
                     filtered_msg = self.filter_incoming_msg(service, msg[2])
+                    if uuid in self.grace_clients:
+                        self.grace_clients[uuid]['msg_cache'].append(filtered_msg)
                     msg = json.dumps({'type': 'msg', 'msg': [filtered_msg], 'I/O': 'in', 'UUID': uuid})
                     self.encrypt_and_send(msg, uuid)
                     break
@@ -447,6 +463,12 @@ class Dispatch(Thread):
                 zoho_in = False
             if zoho_in:
                 self.incoming_dispatch(zoho_in, 'Zoho')
+            try:
+                time_event = self.time_event_queue.get(timeout=0.1)
+            except:  # TODO Narrow exception
+                time_event = False
+            if time_event:
+                self.time_event_handler(time_event)
 
             if self.kill_event.is_set():
                 logger.info('Thread ending :%s', 'Dispatch')
