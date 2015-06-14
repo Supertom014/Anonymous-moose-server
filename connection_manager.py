@@ -39,8 +39,10 @@ class CommunicationThreadingManager(object):
         self.inter_com_queue_out = multiprocessing.Queue()
         self.Intercommunication_handle = InterCommunication(self.kill_event, self.inter_com_queue_in,
                                                             self.inter_com_queue_out, self.options)
-        self.FB_thread_handle = FBThread(self.kill_event, self.fb_queue_in, self.fb_queue_out, self.options)
-        self.zoho_thread_handle = ZohoThread(self.kill_event, self.zoho_queue_in, self.zoho_queue_out, self.options)
+        self.FB_thread_handle = FBThread(self.kill_event, self.fb_queue_in,
+                                         self.fb_queue_out, self.options)
+        self.zoho_thread_handle = ZohoThread(self.kill_event, self.zoho_queue_in,
+                                             self.zoho_queue_out, self.options)
         self.dispatch_thread_handle = Dispatch(self.kill_event, self.root, self.options,
                                                self.incoming_queue, self.outgoing_queue, self.fb_queue_in,
                                                self.fb_queue_out, self.zoho_queue_in, self.zoho_queue_out,
